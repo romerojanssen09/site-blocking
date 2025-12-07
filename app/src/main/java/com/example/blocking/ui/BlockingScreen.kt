@@ -24,11 +24,18 @@ import com.example.blocking.vpn.BlockingVpnService
 @Composable
 fun BlockingScreen() {
     val context = LocalContext.current
-    var isVpnActive by remember { mutableStateOf(false) }
+    val prefs = remember { 
+        context.getSharedPreferences("vpn_state", android.content.Context.MODE_PRIVATE) 
+    }
+    var isVpnActive by remember { mutableStateOf(prefs.getBoolean("is_running", false)) }
     var showAddDialog by remember { mutableStateOf(false) }
     var showLogs by remember { mutableStateOf(false) }
     val blockedDomains by BlockingRulesManager.blockedDomains.collectAsState()
     val blockedIps by BlockingRulesManager.blockedIps.collectAsState()
+    
+    // Double-tap back to exit
+    var backPressedTime by remember { mutableStateOf(0L) }
+    var showExitToast by remember { mutableStateOf(false) }
 
     // Request notification permission
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
@@ -38,9 +45,9 @@ fun BlockingScreen() {
     }
 
     LaunchedEffect(Unit) {
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+//        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
             notificationPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
-        }
+//        }
     }
 
     val vpnLauncher = rememberLauncherForActivityResult(
@@ -52,6 +59,28 @@ fun BlockingScreen() {
             }
             context.startService(intent)
             isVpnActive = true
+        }
+    }
+
+    // Handle system back button when viewing logs
+    androidx.activity.compose.BackHandler(enabled = showLogs) {
+        showLogs = false
+    }
+    
+    // Handle double-tap back to exit on main screen
+    androidx.activity.compose.BackHandler(enabled = !showLogs) {
+        val currentTime = System.currentTimeMillis()
+        if (currentTime - backPressedTime < 2000) {
+            // Double tap detected - exit app
+            (context as? Activity)?.finish()
+        } else {
+            // First tap - show toast
+            backPressedTime = currentTime
+            android.widget.Toast.makeText(
+                context,
+                "Press back again to exit",
+                android.widget.Toast.LENGTH_SHORT
+            ).show()
         }
     }
 
@@ -254,4 +283,17 @@ fun AddBlockingRuleDialog(
             }
         }
     )
+}
+
+// Helper function to check if VPN is running using modern API
+private fun isVpnRunning(context: android.content.Context): Boolean {
+    return try {
+        val connectivityManager = context.getSystemService(android.content.Context.CONNECTIVITY_SERVICE) 
+            as? android.net.ConnectivityManager
+        val network = connectivityManager?.activeNetwork
+        val capabilities = connectivityManager?.getNetworkCapabilities(network)
+        capabilities?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN) == true
+    } catch (e: Exception) {
+        false
+    }
 }

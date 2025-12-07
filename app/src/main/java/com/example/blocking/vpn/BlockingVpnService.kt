@@ -108,6 +108,11 @@ class BlockingVpnService : VpnService() {
         if (vpnInterface != null) return
 
         log("Starting VPN service...")
+        
+        // Save VPN state
+        getSharedPreferences("vpn_state", MODE_PRIVATE).edit()
+            .putBoolean("is_running", true)
+            .apply()
 
         try {
             val builder = Builder()
@@ -160,6 +165,12 @@ class BlockingVpnService : VpnService() {
         rulesObserverJob?.cancel()
         vpnInterface?.close()
         vpnInterface = null
+        
+        // Save VPN state
+        getSharedPreferences("vpn_state", MODE_PRIVATE).edit()
+            .putBoolean("is_running", false)
+            .apply()
+        
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
@@ -681,25 +692,14 @@ class BlockingVpnService : VpnService() {
     private fun showBlockNotification(domain: String) {
         val now = System.currentTimeMillis()
         
-        // Throttle notifications - only show if different domain OR same domain after 1.5 seconds
-        if (domain == lastBlockedDomain && now - lastBlockTime < 1500) {
-            return // Skip notification
+        // Only throttle if SAME domain within 0.5 seconds
+        // Different domain always shows notification immediately
+        if (domain == lastBlockedDomain && now - lastBlockTime < 500) {
+            return // Skip notification - same domain within 0.5s
         }
+        
         lastBlockedDomain = domain
         lastBlockTime = now
-        
-        // Show toast for immediate visual feedback - LONG duration
-        scope.launch(Dispatchers.Main) {
-            try {
-                android.widget.Toast.makeText(
-                    this@BlockingVpnService,
-                    "🚫 Blocked: $domain",
-                    android.widget.Toast.LENGTH_LONG // Longer duration (3.5 seconds)
-                ).show()
-            } catch (e: Exception) {
-                Log.e(TAG, "Toast error: ${e.message}")
-            }
-        }
 
         // Create intent to open app
         val intent = Intent(this, MainActivity::class.java).apply {
@@ -722,31 +722,30 @@ class BlockingVpnService : VpnService() {
 
         // Create NotificationCompat.BigTextStyle
         val bigTextStyleCompat = NotificationCompat.BigTextStyle()
-            .setBigContentTitle("🚫 Blocked Site Detected")
+            .setBigContentTitle("🚫 Site Blocked")
             .bigText(buildString {
-                append("Detected attempt to access blocked site:\n\n")
-                append("🌐 Domain: $domain\n")
-                append("🛡️ Status: Access Denied")
+                append("Blocked access to gambling site:\n\n")
+                append("🌐 $domain\n\n")
+                append("Protection is active and monitoring your browsing.")
             })
 
         val notification = NotificationCompat.Builder(this, BLOCK_CHANNEL_ID)
-            .setContentTitle("🚫 Blocked Site Detected")
-            .setContentText("Detected attempt to access $domain")
-            .setSubText("Swipe to dismiss")
+            .setContentTitle("🚫 Site Blocked")
+            .setContentText("Blocked access to: $domain")
+            .setSubText("Tap to view details")
             .setSmallIcon(android.R.drawable.stat_notify_error)
-            .setColor(0xFFE53935.toInt()) // Red color
+            .setColor(0xFFE53935.toInt())
             .setStyle(bigTextStyleCompat)
             .setContentIntent(pendingIntent)
-            .setFullScreenIntent(fullScreenIntent, true) // Force heads-up display
-            .setAutoCancel(false) // Don't auto-dismiss when tapped - user must swipe
-            .setPriority(NotificationCompat.PRIORITY_MAX)
-            .setCategory(NotificationCompat.CATEGORY_ALARM)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)  // Required for heads-up
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            .setShowWhen(false) // Hide time
+            .setShowWhen(false)
             .setDefaults(NotificationCompat.DEFAULT_ALL)
             .setVibrate(longArrayOf(0, 300, 200, 300))
             .setSound(android.provider.Settings.System.DEFAULT_NOTIFICATION_URI)
-            .setOnlyAlertOnce(false) // Always alert
+            .setOnlyAlertOnce(false)
+            .setAutoCancel(false)          // Notification stays in tray
             .build()
 
         val manager = NotificationManagerCompat.from(this)
