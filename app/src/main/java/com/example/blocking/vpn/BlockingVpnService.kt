@@ -9,6 +9,8 @@ import android.net.VpnService
 import android.os.ParcelFileDescriptor
 import android.system.OsConstants
 import android.util.Log
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
 import com.example.blocking.MainActivity
 import com.example.blocking.data.BlockingRulesManager
 import com.example.blocking.data.LogManager
@@ -37,13 +39,14 @@ class BlockingVpnService : VpnService() {
         private const val CHANNEL_ID = "BlockingVpnChannel"
         private const val BLOCK_CHANNEL_ID = "BlockingNotifications"
         private const val NOTIFICATION_ID = 1
-        private const val BLOCK_NOTIFICATION_ID = 2
+        private const val BLOCK_NOTIFICATION_BASE_ID = 1000
         const val ACTION_START = "com.example.blocking.START_VPN"
         const val ACTION_STOP = "com.example.blocking.STOP_VPN"
     }
 
     private var lastBlockedDomain = ""
     private var lastBlockTime = 0L
+    private var notificationIdCounter = BLOCK_NOTIFICATION_BASE_ID
 
     override fun onCreate() {
         super.onCreate()
@@ -90,7 +93,7 @@ class BlockingVpnService : VpnService() {
             .build()
 
         val manager = getSystemService(NotificationManager::class.java)
-        manager.notify(BLOCK_NOTIFICATION_ID + 1, notification)
+        manager.notify(BLOCK_NOTIFICATION_BASE_ID - 1, notification)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -661,36 +664,99 @@ class BlockingVpnService : VpnService() {
         )
         manager.createNotificationChannel(serviceChannel)
         
-        // Block notifications channel
+        // Block notifications channel - HIGH importance for heads-up display
         val blockChannel = NotificationChannel(
             BLOCK_CHANNEL_ID,
             "Blocked Sites",
-            NotificationManager.IMPORTANCE_DEFAULT
+            NotificationManager.IMPORTANCE_HIGH
         ).apply {
             description = "Notifications when sites are blocked"
+            enableVibration(true)
+            vibrationPattern = longArrayOf(0, 250, 250, 250)
+            setShowBadge(true)
         }
         manager.createNotificationChannel(blockChannel)
     }
 
     private fun showBlockNotification(domain: String) {
-        // Throttle notifications - only show once per domain per 5 seconds
         val now = System.currentTimeMillis()
-        if (domain == lastBlockedDomain && now - lastBlockTime < 5000) {
-            return
+        
+        // Throttle notifications - only show if different domain OR same domain after 1.5 seconds
+        if (domain == lastBlockedDomain && now - lastBlockTime < 1500) {
+            return // Skip notification
         }
         lastBlockedDomain = domain
         lastBlockTime = now
+        
+        // Show toast for immediate visual feedback - LONG duration
+        scope.launch(Dispatchers.Main) {
+            try {
+                android.widget.Toast.makeText(
+                    this@BlockingVpnService,
+                    "🚫 Blocked: $domain",
+                    android.widget.Toast.LENGTH_LONG // Longer duration (3.5 seconds)
+                ).show()
+            } catch (e: Exception) {
+                Log.e(TAG, "Toast error: ${e.message}")
+            }
+        }
 
-        val notification = Notification.Builder(this, BLOCK_CHANNEL_ID)
-            .setContentTitle("Site Blocked")
-            .setContentText(domain)
-            .setSmallIcon(android.R.drawable.ic_delete)
-            .setAutoCancel(true)
-            .setTimeoutAfter(3000)
+        // Create intent to open app
+        val intent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            this, 
+            0, 
+            intent, 
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        // Create full-screen intent for heads-up display
+        val fullScreenIntent = PendingIntent.getActivity(
+            this,
+            0,
+            intent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        // Create NotificationCompat.BigTextStyle
+        val bigTextStyleCompat = NotificationCompat.BigTextStyle()
+            .setBigContentTitle("🚫 Blocked Site Detected")
+            .bigText(buildString {
+                append("Detected attempt to access blocked site:\n\n")
+                append("🌐 Domain: $domain\n")
+                append("🛡️ Status: Access Denied")
+            })
+
+        val notification = NotificationCompat.Builder(this, BLOCK_CHANNEL_ID)
+            .setContentTitle("🚫 Blocked Site Detected")
+            .setContentText("Detected attempt to access $domain")
+            .setSubText("Swipe to dismiss")
+            .setSmallIcon(android.R.drawable.stat_notify_error)
+            .setColor(0xFFE53935.toInt()) // Red color
+            .setStyle(bigTextStyleCompat)
+            .setContentIntent(pendingIntent)
+            .setFullScreenIntent(fullScreenIntent, true) // Force heads-up display
+            .setAutoCancel(false) // Don't auto-dismiss when tapped - user must swipe
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setCategory(NotificationCompat.CATEGORY_ALARM)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setShowWhen(false) // Hide time
+            .setDefaults(NotificationCompat.DEFAULT_ALL)
+            .setVibrate(longArrayOf(0, 300, 200, 300))
+            .setSound(android.provider.Settings.System.DEFAULT_NOTIFICATION_URI)
+            .setOnlyAlertOnce(false) // Always alert
             .build()
 
-        val manager = getSystemService(NotificationManager::class.java)
-        manager.notify(BLOCK_NOTIFICATION_ID, notification)
+        val manager = NotificationManagerCompat.from(this)
+        // Use unique ID for each notification so they stack
+        manager.notify(notificationIdCounter++, notification)
+        
+        // Reset counter if it gets too high
+        if (notificationIdCounter > BLOCK_NOTIFICATION_BASE_ID + 100) {
+            notificationIdCounter = BLOCK_NOTIFICATION_BASE_ID
+        }
     }
 
     private fun createNotification(): Notification {
